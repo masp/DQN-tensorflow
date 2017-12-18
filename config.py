@@ -1,6 +1,8 @@
 class AgentConfig(object):
   scale = 10
   display = False
+  delay_length = 0
+  delay_rand = False
 
   max_step = 5000 * scale
   memory_size = 100 * scale

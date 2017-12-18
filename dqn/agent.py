@@ -22,6 +22,11 @@ class Agent(BaseModel):
     self.env = environment
     self.history = History(self.config)
     self.memory = ReplayMemory(self.config, self.model_dir)
+    # delayed_actions is a fixed size FIFO queue for the actions at every
+    # timestep. delayed_actions[0] is the action to take in the current
+    # timestep and delayed_actions[delay_length - 1] is the current predicted
+    # action for the current timestep
+    self.reset_delayed_actions()
 
     with tf.variable_scope('step'):
       self.step_op = tf.Variable(0, trainable=False, name='step')
@@ -124,7 +129,22 @@ class Agent(BaseModel):
     else:
       action = self.q_action.eval({self.s_t: [s_t]})[0]
 
-    return action
+    # factor in control delay
+    delay_act = action # no delay, use current
+    if self.delay_length > 0:
+        if not self.delay_rand: # fixed delay
+            delay_act = self.delayed_actions.pop(0) # actual action
+            self.delayed_actions.append(action)
+        else: # rand length delay
+            delay_act = self.delayed_actions.pop(0) # still get next action
+            self.delayed_actions.append(0) # apply a NOOP action
+            random_delay = random.randrange(self.delay_length)
+            while self.delayed_actions[random_delay] > 0:
+                random_delay += 1
+            # choose soonest future frame with no future action to do "action"
+            self.delayed_actions[random_delay] = action
+
+    return delay_act
 
   def observe(self, screen, reward, action, terminal):
     reward = max(self.min_reward, min(self.max_reward, reward))
@@ -356,6 +376,9 @@ class Agent(BaseModel):
 
     self.update_target_q_network()
 
+  def reset_delayed_actions(self):
+      self.delayed_actions = self.delay_length * [0]
+
   def inject_summary(self, tag_dict, step):
     summary_str_lists = self.sess.run([self.summary_ops[tag] for tag in tag_dict.keys()], {
       self.summary_placeholders[tag]: value for tag, value in tag_dict.items()
@@ -383,7 +406,7 @@ class Agent(BaseModel):
 
       for t in tqdm(range(n_step), ncols=70):
         # 1. predict
-        action = self.predict(test_history.get(), test_ep)
+        action = self.predict(test_history.get(), test_ep) # predicted
         # 2. act
         screen, reward, terminal = self.env.act(action, is_training=False)
         # 3. observe
